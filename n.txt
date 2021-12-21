@@ -1,0 +1,112 @@
+from IPython.display import clear_output
+from multiprocessing import Process
+
+def order_metrics(df):
+    '''
+    Input: 
+    df- dataframe, either train or test
+    
+    Output: dataframe with additional columns
+    
+    This function will add some columns based on past behavior:
+    - number of orders made in same market in last 15,30,45, and 60 min
+    - total of order subtotal made in same market in last 15,30,45, and 60 min
+    - also create some ratios:
+        dashers to orders ratios
+        number of busy dashers
+        number of dashers working
+    '''
+
+    #make sure target variable doesn't exist
+    if 'Appended_DF' in locals():
+        del Appended_DF
+
+    t=df.copy()
+    t=t[['created_at','market_id','subtotal']]
+    t['created_at']=pd.to_datetime(t['created_at'])
+
+    t['index_col']=t.index
+
+    ran=[*range(100, len(t), 100),len(t)]
+    ran=[*set(ran)]
+    ran=sorted(ran )
+    print(ran)
+    for j in ran:
+        clear_output(wait=True)
+        print(j)
+        print(len(t))
+        
+        if j%100==0:
+            firstindex=j-100
+        else:
+            firstindex=j-(j%100)
+        
+        t5=t.copy()
+        t5=t5.iloc[firstindex:j,]
+        t5['minutesago60']=t5['created_at'] + pd.Timedelta(hours=-1)
+        t5['minutesago15']=t5['created_at'] + pd.Timedelta(minutes=-15)
+        t5['minutesago30']=t5['created_at'] + pd.Timedelta(minutes=-30)
+        t5['minutesago45']=t5['created_at'] + pd.Timedelta(minutes=-45)
+
+
+        #t.shape[0]/100
+        x=pd.merge(t5,t,on=['market_id'],suffixes=['_original','_comparison'])
+        x=x[(x['created_at_comparison']<=x['created_at_original'])&(x['created_at_comparison']>x['minutesago60'])&(x['index_col_original']!=x['index_col_comparison'])]
+
+        x['subtotallast15']=0
+        x['subtotallast30']=0
+        x['subtotallast45']=0
+        x['subtotallast60']=0
+
+        x['orderslast60']=(x['created_at_comparison']>x['minutesago60'])
+        x['orderslast45']=(x['created_at_comparison']>x['minutesago45'])
+        x['orderslast30']=(x['created_at_comparison']>x['minutesago30'])
+        x['orderslast15']=(x['created_at_comparison']>x['minutesago15'])
+        x.loc[x['orderslast15'],'subtotallast15']=x.subtotal_comparison
+        x.loc[x['orderslast30'],'subtotallast30']=x.subtotal_comparison
+        x.loc[x['orderslast45'],'subtotallast45']=x.subtotal_comparison
+        x.loc[x['orderslast60'],'subtotallast60']=x.subtotal_comparison
+
+        v=x.groupby(['index_col_original'])["orderslast15","orderslast30","orderslast45","orderslast60",
+                                            "subtotallast15", "subtotallast30","subtotallast45","subtotallast60"].apply(lambda x : x.astype(int).sum())
+
+        if 'Appended_DF' in locals():
+            Appended_DF.append(v)
+        else:
+            Appended_DF=v
+
+    Appended_DF=Appended_DF.reset_index()
+
+    df['index_col_original']=df.index
+    df=pd.merge(df,Appended_DF,on='index_col_original',how='left').fillna(0)
+
+    df['dashers_working']=df['total_onshift_dashers']+df['total_busy_dashers']
+
+    df['dashers_orderratio']=df['total_outstanding_orders']/(df['total_onshift_dashers'])
+    df['dashers_alldashers']=df['total_outstanding_orders']/(df['dashers_working'])
+    df['busydashers']=df['total_busy_dashers']/(df['dashers_working'])
+    df['availdashers_last15ordersratio']=df['orderslast15']/(df['total_onshift_dashers'])
+    df['availdashers_last30ordersratio']=df['orderslast30']/(df['total_onshift_dashers'])
+    df['availdashers_last45ordersratio']=df['orderslast45']/(df['total_onshift_dashers'])
+    df['availdashers_lasthrordersratio']=df['orderslast60']/(df['total_onshift_dashers'])
+    
+    #fill in some missing values
+    df['dashers_orderratio']=df['dashers_orderratio'].fillna(df['total_outstanding_orders'])
+    df['dashers_alldashers']=df['dashers_alldashers'].fillna(df['total_outstanding_orders'])
+    df['busydashers']=df['busydashers'].fillna(df['total_busy_dashers'])
+    df['availdashers_last15ordersratio']=df['availdashers_last15ordersratio'].fillna(df['orderslast15'])
+    df['availdashers_last30ordersratio']=df['availdashers_last30ordersratio'].fillna(df['orderslast30'])
+    df['availdashers_last45ordersratio']=df['availdashers_last45ordersratio'].fillna(df['orderslast45'])
+    df['availdashers_lasthrordersratio']=df['availdashers_lasthrordersratio'].fillna(df['orderslast60'])
+
+    
+    df.to_pickle('temp.pickle')
+    
+
+    return df
+
+p1 = Process(target=order_metrics(train))
+train=pd.read_pickle('temp.pickle')
+
+p1 = Process(target=order_metrics(test))
+test=pd.read_pickle('temp.pickle')
